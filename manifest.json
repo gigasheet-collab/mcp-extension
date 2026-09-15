@@ -1,0 +1,94 @@
+{
+  "manifest_version": "0.2",
+  "name": "gigasheet",
+  "display_name": "Gigasheet",
+  "version": "0.3.0",
+  "description": "Query large datasets in Gigasheet from Claude using natural language.",
+  "long_description": "Connects Claude to spreadsheets you already have in Gigasheet. Filter, group, aggregate, and sort datasets far larger than Claude could read directly, and get just the matching rows back. Read-only: it queries existing sheets and never modifies them.",
+  "icon": "icon.png",
+  "author": {
+    "name": "Gigasheet, Inc.",
+    "email": "support@gigasheet.com",
+    "url": "https://www.gigasheet.com"
+  },
+  "homepage": "https://www.gigasheet.com",
+  "documentation": "https://support.gigasheet.com",
+  "support": "mailto:support@gigasheet.com",
+  "privacy_policies": [
+    "https://www.gigasheet.com/privacy"
+  ],
+  "keywords": [
+    "spreadsheet",
+    "data",
+    "analysis",
+    "csv",
+    "gigasheet"
+  ],
+  "license": "MIT",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server/index.js"
+      ],
+      "env": {
+        "GIGASHEET_TOKEN": "${user_config.api_token}",
+        "GIGASHEET_MCP_URL": "${user_config.endpoint}",
+        "GIGASHEET_TIMEOUT": "${user_config.timeout}",
+        "GIGASHEET_CLIENT_ID": "DCkqqTydbUWnZC222SXMaYy1bAkttm3R",
+        "GIGASHEET_AUTH0_DOMAIN": "login.gigasheet.com",
+        "GIGASHEET_AUDIENCE": "https://api.gigasheet.com/users"
+      }
+    }
+  },
+  "user_config": {
+    "api_token": {
+      "type": "string",
+      "title": "API token (optional)",
+      "description": "Leave blank. Sign in with your Gigasheet account instead — Claude will walk you through it on your first query. Only fill this in if you have been given a service token to use.",
+      "sensitive": true,
+      "required": false
+    },
+    "endpoint": {
+      "type": "string",
+      "title": "API endpoint",
+      "description": "Only change this if you are on a dedicated or self-hosted Gigasheet instance.",
+      "default": "https://api.gigasheet.com/mcp",
+      "sensitive": false,
+      "required": false
+    },
+    "timeout": {
+      "type": "string",
+      "title": "Query timeout (seconds)",
+      "description": "How long to wait for a query before giving up. Raise this if you routinely query very large sheets.",
+      "default": "120",
+      "sensitive": false,
+      "required": false
+    }
+  },
+  "tools": [
+    {
+      "name": "Analyze",
+      "description": "Filter, group, aggregate, and sort a Gigasheet dataset, returning the matching rows."
+    },
+    {
+      "name": "gigasheet_login",
+      "description": "Sign in to Gigasheet with your own account."
+    },
+    {
+      "name": "gigasheet_logout",
+      "description": "Sign out and erase stored credentials from this computer."
+    }
+  ],
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": [
+      "darwin"
+    ],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  }
+}
