@@ -9,11 +9,15 @@
   "author": {
     "name": "Gigasheet, Inc.",
     "email": "support@gigasheet.com",
-    "url": "https://www.gigasheet.com"
+    "url": "https://github.com/gigasheet-collab"
   },
   "homepage": "https://www.gigasheet.com",
   "documentation": "https://support.gigasheet.com",
   "support": "mailto:support@gigasheet.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gigasheet-collab/mcp-extension"
+  },
   "privacy_policies": [
     "https://www.gigasheet.com/privacy"
   ],
