@@ -23,16 +23,16 @@ inside Claude Desktop.
 
 Give Claude a sheet URL and ask in plain language:
 
-> Using https://app.gigasheet.com/spreadsheet/claims/a1b2c3d4_5e6f_7890_abcd_ef1234567890,
-> what are the top 10 providers by total billed amount in Texas?
+> Using [https://app.gigasheet.com/spreadsheet/claims/a1b2c3d4_5e6f_7890_abcd_ef1234567890](https://app.gigasheet.com/spreadsheet/Hospital-MRF--Limited-Preview-/84daf2fd_cfaa_4252_bc9e_3df4ea2b07a1?referrerId=https%3A%2F%2Fwww.gigasheet.com%2Fsample-data%2Fsample-machine-readable-file-mrf&_gl=1*vi48wb*_gcl_au*MTQ5NDk0MzI2Ni4xNzg3NTk0Nzg2LjEwNDQ2ODk2ODIuMTc4OTM5MjkzOS4xNzg5MzkyOTQ0LjEyMDM2MDY1ODkuMTc4OTM5MjkzOS4xNzg5MzkyOTQ0#a0cb25fd_9ce0_4463_8f20_d817781ae15f),
+> how many CPT codes have a gross charge?
 
 Claude pulls the `sheet_id` out of the URL and translates the question into the
 query grammar.
 
 ## What it can and can't do
 
-Reads existing sheets. It cannot create, upload, modify, or delete them, and it
-cannot join two sheets — combine those in Gigasheet first, then query the result.
+Reads and analyzes datasets you have access to in Gigasheet. It cannot create, upload, 
+modify, or delete them, and it cannot join two sheets — combine those in Gigasheet first, then query the result.
 
 Each call is independent: the sheet resets before every query, so there is no
 incremental refinement. Claude issues one complete query per question.
