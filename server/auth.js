@@ -115,7 +115,7 @@ async function startDeviceFlow() {
  * `deadlineMs` (epoch ms) caps how long we block independently of the code's
  * own lifetime.
  */
-async function pollForToken(deviceCode, interval, expiresIn, deadlineMs) {
+async function pollForToken(deviceCode, interval, expiresIn, deadlineMs, isCancelled) {
   requireClientId();
   let intervalSec = Math.max(parseInt(interval, 10) || 5, 1);
   const codeExpiry = Date.now() + (parseInt(expiresIn, 10) || 900) * 1000;
@@ -123,6 +123,7 @@ async function pollForToken(deviceCode, interval, expiresIn, deadlineMs) {
 
   while (Date.now() < stopAt) {
     await sleep(intervalSec * 1000);
+    if (isCancelled && isCancelled()) throw new AuthError('Sign-in was superseded by a newer one.');
     const { status, json } = await hooks.postForm(TOKEN_URL, {
       grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
       device_code: deviceCode,
@@ -382,10 +383,35 @@ function claimFlowLock() {
 
 function writeFlowLock(info) {
   try {
+    // deviceCode is included (file is 0600, code dies in 15 min and is useless
+    // without the user's approval) so that if Desktop kills this instance
+    // mid-sign-in, a sibling can keep polling the SAME code instead of
+    // opening yet another browser tab.
     fs.writeFileSync(FLOW_LOCK, JSON.stringify({
-      pid: process.pid, startedAt: Date.now(), userCode: info.userCode, verifyUrl: info.verifyUrl,
+      pid: process.pid, startedAt: info.startedAt || Date.now(), userCode: info.userCode,
+      verifyUrl: info.verifyUrl, deviceCode: info.deviceCode, interval: info.interval,
+      lifetime: info.lifetime,
     }), { mode: 0o600 });
   } catch (_) { /* best effort */ }
+}
+
+/**
+ * A sign-in whose owning instance has died but whose code is still usable.
+ * Claude Desktop launches and kills bridge instances in quick succession at
+ * startup; without adoption each casualty left an orphaned browser tab and its
+ * successor opened another (three tabs in one second, in the logs).
+ */
+function readOrphanedFlow() {
+  try {
+    const info = JSON.parse(fs.readFileSync(FLOW_LOCK, 'utf8'));
+    if (!info || !info.deviceCode || !info.userCode || info.pid === process.pid) return null;
+    const remainingMs = info.startedAt + (info.lifetime || 900) * 1000 - Date.now();
+    if (remainingMs < 120 * 1000) return null;          // too close to expiry to be worth it
+    try { process.kill(info.pid, 0); return null; }     // owner alive: not an orphan
+    catch (_) { return Object.assign(info, { remainingMs }); }
+  } catch (_) {
+    return null;
+  }
 }
 
 /** Wait briefly for the owning instance to publish its code into the lock. */
@@ -408,7 +434,7 @@ function clearFlowLock() {
 
 async function pollFlowBackground(info) {
   try {
-    await pollForToken(info.deviceCode, info.interval, info.lifetime);
+    await pollForToken(info.deviceCode, info.interval, info.lifetime, undefined, () => info.cancelled);
     info.status = 'ok';
   } catch (err) {
     info.status = 'error';
@@ -429,7 +455,31 @@ async function pollFlowBackground(info) {
  */
 async function beginInteractiveLogin(open = true) {
   const live = pendingFlow && pendingFlow.status === 'pending' && Date.now() < pendingFlow.expiresAt;
-  if (!live) {
+  let created = false;
+  if (!live && !flowStarting) {
+    const orphan = readOrphanedFlow();
+    if (orphan) {
+      log(`adopting sign-in ${orphan.userCode} from an instance that exited; no new tab`);
+      const info = {
+        deviceCode: orphan.deviceCode, userCode: orphan.userCode, verifyUrl: orphan.verifyUrl,
+        interval: orphan.interval || 5, lifetime: Math.floor(orphan.remainingMs / 1000),
+        startedAt: orphan.startedAt, expiresAt: Date.now() + orphan.remainingMs,
+        status: 'pending', error: null, adopted: true,
+      };
+      writeFlowLock(info);
+      // Two siblings can spot the same orphan at once. Last writer wins the
+      // lock; the loser backs off and joins instead of double-polling.
+      await sleep(40 + Math.floor(Math.random() * 60));
+      let mine = false;
+      try { mine = JSON.parse(fs.readFileSync(FLOW_LOCK, 'utf8')).pid === process.pid; } catch (_) { /* lost it */ }
+      if (mine) {
+        pendingFlow = info;
+        pollFlowBackground(info); // intentionally not awaited
+      }
+    }
+  }
+  const liveNow = pendingFlow && pendingFlow.status === 'pending' && Date.now() < pendingFlow.expiresAt;
+  if (!liveNow) {
     // Another bridge instance already has a sign-in open: join it instead of
     // opening a second tab. The tokens land in the shared keychain either way.
     if (!flowStarting && !claimFlowLock()) {
@@ -457,7 +507,9 @@ async function beginInteractiveLogin(open = true) {
           status: 'pending',
           error: null,
         };
+        info.startedAt = Date.now();
         pendingFlow = info;
+        created = true;
         writeFlowLock(info);
         pollFlowBackground(info); // intentionally not awaited
         hooks.notify(
@@ -469,11 +521,41 @@ async function beginInteractiveLogin(open = true) {
     }
     await flowStarting;
   }
-  if (open && !pendingFlow.shared) hooks.openBrowser(pendingFlow.verifyUrl);
+  const shouldOpen = open === 'always' ? !pendingFlow.shared : (open && created);
+  if (shouldOpen) hooks.openBrowser(pendingFlow.verifyUrl);
   return pendingFlow;
 }
 
+/**
+ * Abandon any sign-in in progress so the next one mints a fresh code. Without
+ * this, a code Auth0 had stopped accepting kept being handed back for its full
+ * 15-minute lifetime, and the only way out was restarting the extension.
+ */
+function discardPendingFlow() {
+  if (pendingFlow && pendingFlow.status === 'pending') {
+    pendingFlow.cancelled = true;
+    pendingFlow.status = 'error';
+    pendingFlow.error = 'superseded';
+  }
+  pendingFlow = null;
+  clearFlowLock();
+}
+
+/** Age in ms of the sign-in currently pending in this process, or null. */
+function pendingFlowAgeMs() {
+  if (!pendingFlow || pendingFlow.status !== 'pending') return null;
+  return Date.now() - (pendingFlow.expiresAt - pendingFlow.lifetime * 1000);
+}
+
+/** Drop the cached access token and refresh from the stored refresh token. */
+async function forceRefresh() {
+  accessToken = null;
+  accessExpiresAt = 0;
+  return getAccessToken();
+}
+
 async function logout() {
+  discardPendingFlow();
   accessToken = null;
   accessExpiresAt = 0;
   identity = null;
@@ -528,6 +610,9 @@ module.exports = {
   getAccessToken,
   cachedAccessToken,
   beginInteractiveLogin,
+  discardPendingFlow,
+  pendingFlowAgeMs,
+  forceRefresh,
   logout,
   hasStoredCredentials,
   describeIdentity,

@@ -29,7 +29,7 @@ const auth = require('./auth');
 const keychain = require('./keychain');
 const { cleanEnv, cleanNumberEnv, log } = require('./env');
 
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 const DEFAULT_URL = 'https://api.gigasheet.com/mcp';
 const AUTH_HEADER = 'X-GIGASHEET-TOKEN';
 
@@ -265,9 +265,17 @@ async function handleLogin(args) {
     }
   }
 
+  // The user is asking again, so whatever code they were given is not working
+  // for them. Codes are free; hand out a new one rather than the same one.
+  const age = auth.pendingFlowAgeMs();
+  if (age !== null && age > 60 * 1000) {
+    log(`replacing pending sign-in code (${Math.round(age / 1000)}s old) at the user's request`);
+    auth.discardPendingFlow();
+  }
+
   let flow;
   try {
-    flow = await auth.beginInteractiveLogin();
+    flow = await auth.beginInteractiveLogin('always');
   } catch (err) {
     if (err instanceof auth.AuthError) return toolResult(err.message, true);
     throw err;
@@ -367,12 +375,15 @@ function post(body, bearer) {
   });
 }
 
+// Swappable so tests can stand in for the remote without a network.
+let transport = post;
+
 /** POST, retrying transient failures. Resolves {status, text} or {error}. */
 async function postWithRetries(body, id, bearer) {
   let lastDetail = null;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const r = await post(body, bearer);
+      const r = await transport(body, bearer);
       if (!RETRY_STATUSES.has(r.status)) return r;
       lastDetail = `HTTP ${r.status} from Gigasheet`;
     } catch (err) {
@@ -460,7 +471,7 @@ async function interpret(status, text, id, method, sentBearer = false) {
       );
     }
 
-    log(`auth rejected by Gigasheet (HTTP ${status})`);
+    log(`auth rejected by Gigasheet (HTTP ${status}): ${text.trim().slice(0, 160)}`);
     if (TOKEN) {
       return errorResponse(
         id,
@@ -470,9 +481,25 @@ async function interpret(status, text, id, method, sentBearer = false) {
         'you can reissue one from Gigasheet under Profile > API.'
       );
     }
+    if (method === 'tools/call' && sentBearer && status === 403) {
+      // 403 is NOT "your token is bad" - Gigasheet answers a bad token with
+      // 401. handle() has already refreshed the access token and retried, so
+      // this is a refusal of a FRESH token: degraded service, or no access to
+      // the resource. Wiping the shared keychain entry here logged out every
+      // running instance and opened sign-in tabs at the next app launch.
+      // Keep the credential; report and move on.
+      return {
+        jsonrpc: '2.0', id,
+        result: toolResult(
+          'Gigasheet refused this request (HTTP 403) even though you are signed in. ' +
+          'This usually means the service is temporarily degraded, or your account lacks ' +
+          'access to this resource. Your sign-in is unchanged - do not sign in again; ' +
+          `retry in a minute. Detail: ${text.trim().slice(0, 200)}`, true),
+      };
+    }
     if (method === 'tools/call' && sentBearer) {
-      // Sign-in mode: OUR bearer was genuinely refused (revoked session,
-      // permissions change). Start a fresh sign-in instead of explaining one.
+      // 401 even after handle() refreshed the token and retried: the session
+      // is genuinely dead (revoked, user removed). Start a fresh sign-in.
       await auth.logout();
       return { jsonrpc: '2.0', id, result: await autoReauthResult() };
     }
@@ -564,7 +591,29 @@ async function handle(line) {
     bearer = auth.cachedAccessToken();
   }
 
-  const outcome = await postWithRetries(line, id, bearer);
+  let outcome = await postWithRetries(line, id, bearer);
+  const refusedAsJson = (o) => {
+    if (o.error || (o.status !== 401 && o.status !== 403)) return false;
+    try { const b = JSON.parse(o.text); return b !== null && typeof b === 'object'; } catch (_) { return false; }
+  };
+  if (refusedAsJson(outcome) && bearer && method === 'tools/call') {
+    // A cached access token can be revoked or expire early. One forced
+    // refresh + retry distinguishes that from a dead session, without
+    // touching the stored credential.
+    try {
+      log(`bearer refused (HTTP ${outcome.status}): ${outcome.text.trim().slice(0, 160)} - refreshing the access token and retrying once`);
+      bearer = await auth.forceRefresh();
+      outcome = await postWithRetries(line, id, bearer);
+    } catch (err) {
+      if (isNotification) return;
+      if (err instanceof auth.NeedsLogin) {
+        log(`sign-in needed: ${err.message}`);
+        writeMessage({ jsonrpc: '2.0', id, result: await autoReauthResult() });
+        return;
+      }
+      if (!(err instanceof auth.AuthError)) throw err;
+    }
+  }
   if (outcome.error) {
     if (!isNotification) writeMessage(outcome.error);
     return;
@@ -686,4 +735,5 @@ module.exports = {
   errorResponse,
   toolResult,
   _setWriter: (fn) => { writeMessage = fn; },
+  _setTransport: (fn) => { transport = fn; },
 };
