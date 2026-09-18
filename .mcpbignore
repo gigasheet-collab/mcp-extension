@@ -1,0 +1,6 @@
+python-reference/
+build.sh
+dist/
+tests/
+.DS_Store
+*.psd

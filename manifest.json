@@ -2,7 +2,7 @@
   "manifest_version": "0.2",
   "name": "gigasheet",
   "display_name": "Gigasheet",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Query large datasets in Gigasheet from Claude using natural language.",
   "long_description": "Connects Claude to spreadsheets you already have in Gigasheet. Filter, group, aggregate, and sort datasets far larger than Claude could read directly, and get just the matching rows back. Read-only: it queries existing sheets and never modifies them.",
   "icon": "icon.png",
